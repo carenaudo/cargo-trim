@@ -29,16 +29,6 @@ Total Disk Usage: 21.44 GB across 5 projects
 
 ## ⚖️ Comparison: `cargo-trim` vs. `kondo` vs. `cargo-sweep`
 
-| Feature / Capability | `cargo-trim` | `kondo` | `cargo-sweep` |
-| :--- | :---: | :---: | :---: |
-| **Deep Nested Discovery** (nested crates, monorepos) | ✅ Yes (unlimited depth) | ❌ Skips subfolders if parent matches | ⚠️ Depends on Cargo structure |
-| **Multi-Language Drive Resilience** | ✅ Won't get blocked by `.venv` / `node_modules` | ❌ Stops when parent project found | ✅ Rust-only |
-| **Smart Cache Mode** (keep compiled `.exe` / binaries) | ✅ Yes (`-k` / `--keep-bin`) | ❌ No (all-or-nothing wipe) | ✅ Yes (`-i` / `--installed`) |
-| **Age-Based Filtering** (`--older <days>`) | ✅ Yes (`-d`) | ⚠️ Timestamp based on dir | ✅ Yes (`-t`) |
-| **Parallel Scanning & Deletion** | ✅ Multi-threaded (Rayon) | ⚠️ Partial | ❌ Single-threaded Cargo calls |
-| **Unified Table Summary** | ✅ Single-glance summary of all targets | ⚠️ TUI (one-by-one) | ❌ Verbose log stream |
-| **Dual Cargo Plugin & Standalone Binary** | ✅ `cargo trim` or `cargo-trim` | ❌ Standalone only | ⚠️ Cargo plugin only |
-| **Cross-Platform** (Windows, Linux, macOS) | ✅ Full support | ✅ Full support | ✅ Full support |
 
 ### Key Differences in Short:
 * **vs. `kondo`:**
