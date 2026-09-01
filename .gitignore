@@ -1,0 +1,6 @@
+/target
+/cargo-trim.exe
+**/*.rs.bk
+*.pdb
+.DS_Store
+Thumbs.db
