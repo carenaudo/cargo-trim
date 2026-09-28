@@ -2,7 +2,7 @@
 name = "cargo-trim"
 version = "0.1.0"
 edition = "2021"
-authors = ["Carlos Renaudo <c.a.renaudo@gmail.com>"]
+authors = ["carenaudo", "Antigravity"]
 description = "Fast, standalone tool and Cargo plugin to scan and clean Cargo build target directories across nested project hierarchies"
 license = "MIT"
 readme = "README.md"
