@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 #[derive(Parser, Debug)]
 #[command(
     name = "cargo-trim",
-    author = "Antigravity",
+    author = clap::crate_authors!(", "),
     version = "0.1.0",
     about = "Recursively find and clean Cargo target build directories across nested subfolders."
 )]
@@ -371,4 +371,15 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn author_comes_from_cargo_toml() {
+        assert_eq!(Args::command().get_author(), Some("carenaudo, Antigravity"));
+    }
 }

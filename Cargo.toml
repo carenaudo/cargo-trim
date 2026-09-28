@@ -11,7 +11,7 @@ keywords = ["cargo", "cleanup", "target", "disk-space", "cli"]
 categories = ["command-line-utilities", "development-tools::cargo-plugins"]
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "cargo"] }
 walkdir = "2.5"
 rayon = "1.10"
 
