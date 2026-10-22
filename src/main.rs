@@ -46,25 +46,22 @@ struct TargetInfo {
     last_modified: SystemTime,
 }
 
+/// A directory is deleted whole once it matches, so only evidence that Cargo itself wrote it
+/// counts. A `debug/` or `release/` folder does not: other build systems create those too.
 fn is_cargo_target(path: &Path) -> bool {
-    // 1. Check for CACHEDIR.TAG (standard in Cargo targets)
-    if path.join("CACHEDIR.TAG").exists() {
-        return true;
-    }
-    // 2. Check if parent directory contains Cargo.toml
-    if let Some(parent) = path.parent() {
-        if parent.join("Cargo.toml").exists() {
+    // Cargo writes a CACHEDIR.TAG that names it; other tools write the same file with
+    // their own name, so the file existing is not enough.
+    if let Ok(tag) = fs::read_to_string(path.join("CACHEDIR.TAG")) {
+        if tag.to_ascii_lowercase().contains("cargo") {
             return true;
         }
     }
-    // 3. Check for standard cargo subdirs/files
-    if path.join(".rustc_info.json").exists()
-        || path.join("debug").is_dir()
-        || path.join("release").is_dir()
-    {
+    // Cargo caches the rustc version here; nothing else writes it.
+    if path.join(".rustc_info.json").is_file() {
         return true;
     }
-    false
+    // A `target/` next to a manifest, as a last resort for very old Cargo versions.
+    path.parent().map_or(false, |p| p.join("Cargo.toml").is_file())
 }
 
 fn clean_path_display(path: &Path) -> String {
@@ -164,7 +161,8 @@ fn scan_for_targets(root: &Path) -> Vec<PathBuf> {
             continue;
         }
 
-        if name.eq_ignore_ascii_case("target") {
+        // Cargo always names it `target` in lowercase; `Target/` is someone else's.
+        if name == "target" {
             let path = entry.path().to_path_buf();
             if is_cargo_target(&path) {
                 targets.push(path);
@@ -495,8 +493,7 @@ mod tests {
 
     #[test]
     fn smart_clean_keeps_only_binaries_and_bundles() {
-        let root = std::env::temp_dir().join(format!("cargo-trim-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let root = scratch("smart");
         let t = root.join("target");
         let files = [
             "CACHEDIR.TAG",
@@ -551,5 +548,72 @@ mod tests {
             ]
         );
         assert_eq!(freed, 4 * (files.len() as u64 - left.len() as u64));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cargo-trim-{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn recognises_targets_cargo_wrote() {
+        let root = scratch("cargo");
+
+        let tagged = root.join("tagged/target");
+        fs::create_dir_all(&tagged).unwrap();
+        fs::write(
+            tagged.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n",
+        )
+        .unwrap();
+
+        let rustc_info = root.join("info/target");
+        fs::create_dir_all(&rustc_info).unwrap();
+        fs::write(rustc_info.join(".rustc_info.json"), "{}").unwrap();
+
+        let manifest = root.join("manifest");
+        fs::create_dir_all(manifest.join("target")).unwrap();
+        fs::write(manifest.join("Cargo.toml"), "[package]\n").unwrap();
+
+        assert!(is_cargo_target(&tagged));
+        assert!(is_cargo_target(&rustc_info));
+        assert!(is_cargo_target(&manifest.join("target")));
+        let mut found = scan_for_targets(&root);
+        found.sort();
+        assert_eq!(found.len(), 3);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ignores_targets_other_tools_wrote() {
+        let root = scratch("other");
+
+        // Another build system's output with the usual profile folders.
+        let other = root.join("cmake-project/target");
+        fs::create_dir_all(other.join("release")).unwrap();
+        fs::create_dir_all(other.join("debug")).unwrap();
+
+        // Another tool's cache tag.
+        let tagged = root.join("tagged/target");
+        fs::create_dir_all(&tagged).unwrap();
+        fs::write(
+            tagged.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n# created by some-other-tool\n",
+        )
+        .unwrap();
+
+        // Capitalised, even with Cargo's marker inside.
+        let capital = root.join("capital/Target");
+        fs::create_dir_all(&capital).unwrap();
+        fs::write(capital.join(".rustc_info.json"), "{}").unwrap();
+
+        assert!(!is_cargo_target(&other));
+        assert!(!is_cargo_target(&tagged));
+        assert!(scan_for_targets(&root).is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }
