@@ -1,5 +1,6 @@
 use clap::Parser;
 use rayon::prelude::*;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ struct Args {
     #[arg(short = 'd', long = "older", value_name = "DAYS")]
     older_days: Option<u64>,
 
-    /// Smart mode: Delete intermediate caches (deps, incremental, build, .fingerprint) but keep final compiled binaries (.exe, .dll, etc.)
+    /// Keep newest executables/shared libraries and installer bundles; delete other artifacts
     #[arg(short = 'k', long = "keep-bin")]
     keep_bin: bool,
 
@@ -61,7 +62,8 @@ fn is_cargo_target(path: &Path) -> bool {
         return true;
     }
     // A `target/` next to a manifest, as a last resort for very old Cargo versions.
-    path.parent().map_or(false, |p| p.join("Cargo.toml").is_file())
+    path.parent()
+        .map_or(false, |p| p.join("Cargo.toml").is_file())
 }
 
 fn clean_path_display(path: &Path) -> String {
@@ -138,9 +140,7 @@ fn calculate_target_stats(target_path: &Path) -> (u64, SystemTime) {
 
 fn scan_for_targets(root: &Path) -> Vec<PathBuf> {
     let mut targets = Vec::new();
-    let mut it = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter();
+    let mut it = WalkDir::new(root).follow_links(false).into_iter();
 
     while let Some(entry_res) = it.next() {
         let entry = match entry_res {
@@ -174,40 +174,178 @@ fn scan_for_targets(root: &Path) -> Vec<PathBuf> {
     targets
 }
 
-fn clean_target_smart(target_path: &Path) -> io::Result<u64> {
-    let mut freed_bytes = 0u64;
+#[derive(Debug)]
+struct SmartPlan {
+    keep: Vec<PathBuf>,
+    remove: Vec<(PathBuf, u64)>,
+    directories: Vec<PathBuf>,
+}
 
-    // Subdirectories inside profiles to clean
-    let cache_dirs = ["deps", "incremental", "build", ".fingerprint", "examples"];
-    let profiles = ["debug", "release"];
+fn is_shared_library(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    name.ends_with(".dll")
+        || name.ends_with(".dylib")
+        || name.ends_with(".so")
+        || name.contains(".so.")
+}
 
-    for profile in &profiles {
-        let prof_dir = target_path.join(profile);
-        if prof_dir.is_dir() {
-            for cache in &cache_dirs {
-                let cache_path = prof_dir.join(cache);
-                if cache_path.exists() {
-                    let (size, _) = calculate_target_stats(&cache_path);
-                    if let Ok(_) = fs::remove_dir_all(&cache_path) {
-                        freed_bytes += size;
-                    }
-                }
+fn is_executable(path: &Path, meta: &fs::Metadata) -> bool {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return path.extension().is_none() && meta.permissions().mode() & 0o111 != 0;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+fn is_installer(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    matches!(
+        ext.as_str(),
+        "msi"
+            | "msix"
+            | "msixbundle"
+            | "appx"
+            | "appxbundle"
+            | "dmg"
+            | "pkg"
+            | "deb"
+            | "rpm"
+            | "appimage"
+            | "apk"
+            | "aab"
+    )
+}
+
+fn plan_smart_cleanup(target: &Path) -> io::Result<SmartPlan> {
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut newest = BTreeMap::<std::ffi::OsString, (SystemTime, PathBuf)>::new();
+    let mut libraries = Vec::new();
+    let mut bundles = Vec::new();
+    let mut walker = WalkDir::new(target)
+        .follow_links(false)
+        .min_depth(1)
+        .into_iter();
+    while let Some(entry) = walker.next() {
+        let entry = entry.map_err(io::Error::other)?;
+        let path = entry.path().to_path_buf();
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if entry.file_type().is_dir()
+            && (name == "bundle"
+                || name.ends_with(".app")
+                || name.ends_with(".framework")
+                || name.ends_with(".bundle"))
+        {
+            bundles.push(path);
+            walker.skip_current_dir();
+            continue;
+        }
+        // Fail closed: links may point outside the target or form library chains.
+        if entry.path_is_symlink() {
+            return Err(io::Error::other(format!(
+                "Cannot safely trim target containing a symbolic link: {}",
+                path.display()
+            )));
+        }
+        if entry.file_type().is_dir() {
+            directories.push(path);
+            continue;
+        }
+        let meta = entry.metadata().map_err(io::Error::other)?;
+        let relative = path.strip_prefix(target).unwrap();
+        let in_cache = relative.parent().unwrap().components().any(|part| {
+            matches!(
+                part.as_os_str().to_str(),
+                Some("deps" | "incremental" | "build" | ".fingerprint")
+            )
+        });
+        if !in_cache && (is_executable(&path, &meta) || is_shared_library(&path)) {
+            let candidate = (meta.modified()?, path.clone());
+            let key = path.file_name().unwrap().to_os_string();
+            if newest.get(&key).map_or(true, |old| candidate > *old) {
+                newest.insert(key, candidate);
             }
         }
+        if is_shared_library(&path) {
+            libraries.push(path.clone());
+        }
+        if is_installer(&path) {
+            bundles.push(path.clone());
+        }
+        files.push((path, meta.len()));
     }
+    let mut keep: HashSet<PathBuf> = newest.into_values().map(|(_, path)| path).collect();
+    // Keep sibling libraries with retained programs: picking a DLL from another
+    // profile can break the loader or introduce an incompatible ABI.
+    let output_dirs: HashSet<PathBuf> = keep
+        .iter()
+        .map(|p| p.parent().unwrap().to_path_buf())
+        .collect();
+    keep.extend(
+        libraries
+            .into_iter()
+            .filter(|p| output_dirs.contains(p.parent().unwrap())),
+    );
+    keep.extend(bundles);
+    let remove = files
+        .into_iter()
+        .filter(|(p, _)| {
+            !keep.contains(p)
+                && p != &target.join("CACHEDIR.TAG")
+                && p != &target.join(".rustc_info.json")
+        })
+        .collect();
+    let mut keep: Vec<_> = keep.into_iter().collect();
+    keep.sort();
+    directories.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    Ok(SmartPlan {
+        keep,
+        remove,
+        directories,
+    })
+}
 
-    // Also clean doc and package directories
-    for extra in &["doc", "package"] {
-        let p = target_path.join(extra);
-        if p.exists() {
-            let (size, _) = calculate_target_stats(&p);
-            if let Ok(_) = fs::remove_dir_all(&p) {
-                freed_bytes += size;
-            }
+fn clean_target_smart(plan: &SmartPlan) -> io::Result<u64> {
+    let mut freed = 0;
+    for (path, size) in &plan.remove {
+        fs::remove_file(path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "{}: {} (removed {} before failure)",
+                    path.display(),
+                    error,
+                    format_bytes(freed)
+                ),
+            )
+        })?;
+        freed += size;
+    }
+    for path in &plan.directories {
+        if fs::read_dir(path)?.next().is_none() {
+            fs::remove_dir(path)?;
         }
     }
-
-    Ok(freed_bytes)
+    Ok(freed)
 }
 
 fn main() -> io::Result<()> {
@@ -220,7 +358,10 @@ fn main() -> io::Result<()> {
     let root = fs::canonicalize(&args.path).unwrap_or_else(|_| args.path.clone());
     let current_exe = std::env::current_exe().ok();
 
-    println!("🔍 Scanning for Cargo targets in: {}", clean_path_display(&root));
+    println!(
+        "🔍 Scanning for Cargo targets in: {}",
+        clean_path_display(&root)
+    );
     let raw_targets = scan_for_targets(&root);
 
     if raw_targets.is_empty() {
@@ -228,7 +369,10 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    println!("📊 Found {} potential targets. Analyzing sizes and age in parallel...", raw_targets.len());
+    println!(
+        "📊 Found {} potential targets. Analyzing sizes and age in parallel...",
+        raw_targets.len()
+    );
 
     let mut target_infos: Vec<TargetInfo> = raw_targets
         .into_par_iter()
@@ -268,8 +412,13 @@ fn main() -> io::Result<()> {
 
     let total_size: u64 = target_infos.iter().map(|t| t.size_bytes).sum();
 
-    println!("\n┌─ Found Cargo Targets ──────────────────────────────────────────────────────────────┐");
-    println!("│ {:<68} │ {:<12} │ {:<14} │", "Project Path", "Size", "Last Active");
+    println!(
+        "\n┌─ Found Cargo Targets ──────────────────────────────────────────────────────────────┐"
+    );
+    println!(
+        "│ {:<68} │ {:<12} │ {:<14} │",
+        "Project Path", "Size", "Last Active"
+    );
     println!("├──────────────────────────────────────────────────────────────────────┼──────────────┼────────────────┤");
 
     for info in &target_infos {
@@ -294,6 +443,28 @@ fn main() -> io::Result<()> {
         target_infos.len()
     );
 
+    let mut smart_plans = BTreeMap::new();
+    if args.keep_bin {
+        let mut reclaimable = 0;
+        for info in &target_infos {
+            let plan = plan_smart_cleanup(&info.path)?;
+            println!("Keep in {}:", clean_path_display(&info.path));
+            if plan.keep.is_empty() {
+                println!("  No executable or shared library found.");
+            }
+            for path in &plan.keep {
+                println!("  {}", clean_path_display(path));
+            }
+            reclaimable += plan.remove.iter().map(|(_, size)| size).sum::<u64>();
+            smart_plans.insert(info.path.clone(), plan);
+        }
+        println!(
+            "Estimated reclaimable file size: {}",
+            format_bytes(reclaimable)
+        );
+        println!("Other artifacts, including debug symbols, static libraries and captures, will be deleted. External runtime assets are not inferred.");
+    }
+
     if args.dry_run {
         println!("ℹ️  Dry-run active. No files were deleted.");
         return Ok(());
@@ -302,11 +473,15 @@ fn main() -> io::Result<()> {
     // Check confirmation if not -y
     if !args.yes {
         let mode_desc = if args.keep_bin {
-            "Trim intermediate caches (keep final binaries)"
+            "Delete other artifacts; keep newest executables and shared libraries listed above"
         } else {
             "Completely delete target directories"
         };
-        print!("❓ Clean these {} targets [{}]? (y/N): ", target_infos.len(), mode_desc);
+        print!(
+            "❓ Clean these {} targets [{}]? (y/N): ",
+            target_infos.len(),
+            mode_desc
+        );
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -335,7 +510,7 @@ fn main() -> io::Result<()> {
             }
 
             if args.keep_bin {
-                let freed = clean_target_smart(&info.path);
+                let freed = clean_target_smart(&smart_plans[&info.path]);
                 (info.path.clone(), freed)
             } else {
                 match fs::remove_dir_all(&info.path) {
@@ -363,9 +538,15 @@ fn main() -> io::Result<()> {
         }
     }
 
-    println!("\n🎉 Finished! Successfully freed {} of disk space.", format_bytes(total_freed));
+    println!(
+        "\n🎉 Finished! Successfully freed {} of disk space.",
+        format_bytes(total_freed)
+    );
     if failed > 0 {
-        println!("⚠️  {} targets could not be deleted (may be open in another program or IDE).", failed);
+        println!(
+            "⚠️  {} targets could not be deleted (may be open in another program or IDE).",
+            failed
+        );
     }
 
     Ok(())
@@ -379,6 +560,92 @@ mod tests {
     #[test]
     fn author_comes_from_cargo_toml() {
         assert_eq!(Args::command().get_author(), Some("carenaudo, Antigravity"));
+    }
+
+    fn fixture(root: &Path, path: &str, bytes: &[u8], age: u64) -> PathBuf {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(age)),
+            )
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn smart_removes_debug_and_nested_artifacts_but_keeps_newest_outputs() {
+        let root = scratch("smart");
+        let old = fixture(&root, "release/game.exe", b"old", 1);
+        let latest = fixture(&root, "debug/game.exe", b"new", 2);
+        let tool = fixture(&root, "release/tool.exe", b"tool", 1);
+        let library = fixture(&root, "custom/libplugin.so", b"library", 2);
+        fixture(&root, "release/libplugin.so", b"older", 1);
+        let dll = fixture(&root, "debug/runtime.dll", b"runtime", 1);
+        for path in [
+            "debug/game.pdb",
+            "debug/lib.rlib",
+            "nested/release/deps/cache.rmeta",
+            "debug/deps/game-hash.exe",
+            "performance/frame.rgba",
+        ] {
+            fixture(&root, path, b"junk", 3);
+        }
+        let plan = plan_smart_cleanup(&root).unwrap();
+        let expected: u64 = plan.remove.iter().map(|(_, size)| size).sum();
+        let before = calculate_target_stats(&root).0;
+        assert_eq!(clean_target_smart(&plan).unwrap(), expected);
+        assert_eq!(before - calculate_target_stats(&root).0, expected);
+        assert!(!old.exists());
+        for path in [latest, tool, library, dll] {
+            assert!(path.exists());
+        }
+        assert!(!root.join("performance").exists());
+        assert!(!root.join("debug/deps").exists());
+        assert!(!root.join("debug/game.pdb").exists());
+        assert!(plan_smart_cleanup(&root).unwrap().remove.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn smart_keeps_installers_and_complete_bundles() {
+        let root = scratch("bundles");
+        let paths = [
+            "release/bundle/nsis/setup.exe",
+            "release/bundle/resources/data.bin",
+            "debug/Game.app/Contents/Resources/icon.png",
+            "packages/game.msi",
+            "packages/game.AppImage",
+            "packages/game.deb",
+            "release/plugin.dylib",
+        ];
+        for path in paths {
+            fixture(&root, path, b"keep", 1);
+        }
+        fixture(&root, "debug/cache.pdb", b"remove", 1);
+        let plan = plan_smart_cleanup(&root).unwrap();
+        assert!(root.join("debug/cache.pdb").exists()); // Planning is read-only.
+        clean_target_smart(&plan).unwrap();
+        for path in paths {
+            assert!(root.join(path).exists(), "{path}");
+        }
+        assert!(!root.join("debug/cache.pdb").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn smart_reports_deletion_failures() {
+        let root = scratch("failure");
+        let path = fixture(&root, "debug/cache.pdb", b"junk", 1);
+        let plan = plan_smart_cleanup(&root).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(clean_target_smart(&plan).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn scratch(name: &str) -> PathBuf {
