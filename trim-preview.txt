@@ -1,0 +1,235 @@
+🔍 Scanning for Cargo targets in: D:\programacion
+📊 Found 22 potential targets. Analyzing sizes and age in parallel...
+
+┌─ Found Cargo Targets ──────────────────────────────────────────────────────────────┐
+│ Project Path                                                         │ Size         │ Last Active    │
+├──────────────────────────────────────────────────────────────────────┼──────────────┼────────────────┤
+│ D:\programacion\rust-snes\target                                     │     16.47 GB │ 4 hours ago    │
+│ D:\programacion\rpg-suite\rpg-engine-rust\target                     │      1.49 GB │ 1 months ago   │
+│ D:\programacion\rust-genesis\target                                  │    892.49 MB │ 5 days ago     │
+│ D:\programacion\Rusty-FE\target                                      │    763.81 MB │ 2 days ago     │
+│ D:\programacion\rust-nes\target                                      │    690.11 MB │ 3 days ago     │
+│ D:\programacion\easy-rpg REditor\target                              │    503.40 MB │ 3 weeks ago    │
+│ D:\programacion\rusty-video\target                                   │    393.21 MB │ 6 days ago     │
+│ D:\programacion\rust-snes\godot_snes\gdextension\target              │    372.44 MB │ just now       │
+│ D:\programacion\cargo-trim\target                                    │    272.18 MB │ just now       │
+│ D:\programacion\rust-psx\target                                      │    256.33 MB │ 5 days ago     │
+│ D:\programacion\amurielle-server\target                              │    128.43 MB │ 2 days ago     │
+│ D:\programacion\amurielle-client\rust-client-ext\target              │    100.08 MB │ 1 hours ago    │
+│ D:\programacion\rust-gb\target                                       │     50.41 MB │ 4 days ago     │
+│ D:\programacion\rusty-net\target                                     │     32.62 MB │ 1 weeks ago    │
+│ D:\programacion\rusty-server\target                                  │     16.68 MB │ 1 weeks ago    │
+│ D:\programacion\rust-gba\target                                      │     14.81 MB │ 2 days ago     │
+│ D:\programacion\rust-snes\crates\snes-core\target                    │    224.05 KB │ 2 days ago     │
+│ D:\programacion\rust-gb\crates\gb-desktop\target                     │          0 B │ 5 days ago     │
+│ D:\programacion\rust-genesis\crates\gen-desktop\target               │          0 B │ 5 days ago     │
+│ D:\programacion\rust-nes\crates\nes-desktop\target                   │          0 B │ 4 days ago     │
+│ D:\programacion\rust-psx\crates\psx-desktop\target                   │          0 B │ 5 days ago     │
+│ D:\programacion\rust-snes\crates\snes-desktop\target                 │          0 B │ 7 hours ago    │
+└──────────────────────────────────────────────────────────────────────┴──────────────┴────────────────┘
+Total Disk Usage: 22.34 GB across 22 projects
+
+Keep in D:\programacion\rust-snes\target:
+  D:\programacion\rust-snes\target\performance-bg-windows\hoist.exe
+  D:\programacion\rust-snes\target\performance-bg-windows\truth.exe
+  D:\programacion\rust-snes\target\performance-clocked-bus\clocked.exe
+  D:\programacion\rust-snes\target\performance-compose-last-pixel\baseline-capture.exe
+  D:\programacion\rust-snes\target\performance-compose-last-pixel\candidate-capture.exe
+  D:\programacion\rust-snes\target\performance-composition\global\optimized.exe
+  D:\programacion\rust-snes\target\performance-composition\pixel-gating.exe
+  D:\programacion\rust-snes\target\performance-crt-row-cache\gpu-uniform-pairs.exe
+  D:\programacion\rust-snes\target\performance-crt-row-cache\preliminary-inline-cache.exe
+  D:\programacion\rust-snes\target\performance-crt-row-cache\rejected-control-v1.exe
+  D:\programacion\rust-snes\target\performance-crt-row-cache\rejected-control-v2.exe
+  D:\programacion\rust-snes\target\performance-crt-row-cache\rejected-uniform-gpu.exe
+  D:\programacion\rust-snes\target\performance-crt-row-cache\rejected-zero-blend-gpu.exe
+  D:\programacion\rust-snes\target\performance-desktop-backends\baseline-software-window.exe
+  D:\programacion\rust-snes\target\performance-desktop-backends\baseline-window.exe
+  D:\programacion\rust-snes\target\performance-desktop-backends\candidate-software-window.exe
+  D:\programacion\rust-snes\target\performance-desktop-backends\candidate-window.exe
+  D:\programacion\rust-snes\target\performance-desktop-backends\staging-pairs.exe
+  D:\programacion\rust-snes\target\performance-desktop-backends\staging.exe
+  D:\programacion\rust-snes\target\performance-filter-work\baseline-controls.exe
+  D:\programacion\rust-snes\target\performance-filter-work\baseline-filter.exe
+  D:\programacion\rust-snes\target\performance-filter-work\baseline-final.exe
+  D:\programacion\rust-snes\target\performance-filter-work\baseline-scaler.exe
+  D:\programacion\rust-snes\target\performance-filter-work\candidate-controls.exe
+  D:\programacion\rust-snes\target\performance-filter-work\candidate-filter.exe
+  D:\programacion\rust-snes\target\performance-filter-work\candidate-final.exe
+  D:\programacion\rust-snes\target\performance-filter-work\candidate-scaler.exe
+  D:\programacion\rust-snes\target\performance-filter-work\gpu-resource-pairs.exe
+  D:\programacion\rust-snes\target\performance-filter-work\rejected-dead-sample.exe
+  D:\programacion\rust-snes\target\performance-filter-work\scaler-candidate-filter.exe
+  D:\programacion\rust-snes\target\performance-filter-work\scaler-candidate-gpu.exe
+  D:\programacion\rust-snes\target\performance-final-pass\baseline.exe
+  D:\programacion\rust-snes\target\performance-final-pass\candidate.exe
+  D:\programacion\rust-snes\target\performance-gpu\gpu_filter_bench-baseline.exe
+  D:\programacion\rust-snes\target\performance-gpu\gpu_filter_bench-sample.exe
+  D:\programacion\rust-snes\target\performance-gpu-round3\shortcut.exe
+  D:\programacion\rust-snes\target\performance-gpu-round5\cpu-baseline.exe
+  D:\programacion\rust-snes\target\performance-gpu-round5\scaler_bench.exe
+  D:\programacion\rust-snes\target\performance-hot-dispatch\INVALID-instrumented-baseline.exe
+  D:\programacion\rust-snes\target\performance-mario-review\hoisted.exe
+  D:\programacion\rust-snes\target\performance-mario-review\specialized.exe
+  D:\programacion\rust-snes\target\performance-normal-step\candidate-build\release\examples\accuracy_capture.exe
+  D:\programacion\rust-snes\target\performance-post-events-profile\profiled.exe
+  D:\programacion\rust-snes\target\performance-review-dispatch\prototype\capture.exe
+  D:\programacion\rust-snes\target\performance-rom-mapping\capture-baseline.exe
+  D:\programacion\rust-snes\target\performance-rom-mapping\capture-optimized.exe
+  D:\programacion\rust-snes\target\performance-rom-mapping\mask-only.exe
+  D:\programacion\rust-snes\target\performance-sa1-bwram\bwram.exe
+  D:\programacion\rust-snes\target\performance-sa1-census\instrumented.exe
+  D:\programacion\rust-snes\target\performance-sa1-census\menu-instrumented.exe
+  D:\programacion\rust-snes\target\performance-sa1-routing\routing.exe
+  D:\programacion\rust-snes\target\performance-small-gains-combined\bpp.exe
+  D:\programacion\rust-snes\target\performance-small-gains-combined\combined.exe
+  D:\programacion\rust-snes\target\performance-small-gains-combined\cpu.exe
+  D:\programacion\rust-snes\target\performance-small-gains-combined\cpu_bpp.exe
+  D:\programacion\rust-snes\target\performance-small-gains-combined\row.exe
+  D:\programacion\rust-snes\target\performance-small-gains-combined\row_bpp.exe
+  D:\programacion\rust-snes\target\performance-tile-rows\usize.exe
+  D:\programacion\rust-snes\target\performance-tile-spans\spans-only.exe
+  D:\programacion\rust-snes\target\performance-transfers\accepted-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\accepted-gpu-oracle.exe
+  D:\programacion\rust-snes\target\performance-transfers\accepted-gpu.exe
+  D:\programacion\rust-snes\target\performance-transfers\accepted-nearest.exe
+  D:\programacion\rust-snes\target\performance-transfers\baseline-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\baseline-gpu-oracle.exe
+  D:\programacion\rust-snes\target\performance-transfers\baseline-gpu.exe
+  D:\programacion\rust-snes\target\performance-transfers\baseline-nearest.exe
+  D:\programacion\rust-snes\target\performance-transfers\borrow-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\candidate-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\candidate-gpu-oracle.exe
+  D:\programacion\rust-snes\target\performance-transfers\candidate-gpu.exe
+  D:\programacion\rust-snes\target\performance-transfers\candidate-nearest.exe
+  D:\programacion\rust-snes\target\performance-transfers\clear-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\clear-final-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\clear-final-gpu-oracle.exe
+  D:\programacion\rust-snes\target\performance-transfers\clear-final-gpu.exe
+  D:\programacion\rust-snes\target\performance-transfers\isolated-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\isolated-gpu.exe
+  D:\programacion\rust-snes\target\performance-transfers\isolated-nearest.exe
+  D:\programacion\rust-snes\target\performance-transfers\release-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\release-gpu-oracle.exe
+  D:\programacion\rust-snes\target\performance-transfers\release-gpu.exe
+  D:\programacion\rust-snes\target\performance-transfers\release-nearest.exe
+  D:\programacion\rust-snes\target\performance-transfers\scoped-borrow-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\scoped-clear-aligned.exe
+  D:\programacion\rust-snes\target\performance-transfers\scoped-clear-gpu.exe
+  D:\programacion\rust-snes\target\performance-transfers\scoped-clear-nearest.exe
+  D:\programacion\rust-snes\target\performance-unit-mosaic\capture-candidate.exe
+  D:\programacion\rust-snes\target\release\snes-cli.exe
+  D:\programacion\rust-snes\target\release\snes-desktop.exe
+  D:\programacion\rust-snes\target\video-validation\release\examples\compare_gb.exe
+  D:\programacion\rust-snes\target\video-validation\release\examples\compare_gen.exe
+  D:\programacion\rust-snes\target\video-validation\release\examples\compare_nes.exe
+  D:\programacion\rust-snes\target\video-validation\release\examples\compare_psx.exe
+  D:\programacion\rust-snes\target\video-validation\release\examples\compare_snes.exe
+Keep in D:\programacion\rpg-suite\rpg-engine-rust\target:
+  D:\programacion\rpg-suite\rpg-engine-rust\target\debug\rpg.exe
+  D:\programacion\rpg-suite\rpg-engine-rust\target\debug\rpg_player.exe
+  D:\programacion\rpg-suite\rpg-engine-rust\target\release\rpg_editor.exe
+Keep in D:\programacion\rust-genesis\target:
+  D:\programacion\rust-genesis\target\accuracy\gx\genesis_plus_gx_reference.dll
+  D:\programacion\rust-genesis\target\reference-src\genesis-plus-gx\builds\genesis_plus_gx_libretro.dll
+  D:\programacion\rust-genesis\target\release\gen-cli.exe
+  D:\programacion\rust-genesis\target\release\gen-desktop.exe
+Keep in D:\programacion\Rusty-FE\target:
+  D:\programacion\Rusty-FE\target\controller-probe.exe
+  D:\programacion\Rusty-FE\target\debug\rusty-fe.exe
+  D:\programacion\Rusty-FE\target\emulator-package\gb-cli.exe
+  D:\programacion\Rusty-FE\target\emulator-package\gen-cli.exe
+  D:\programacion\Rusty-FE\target\emulator-package\nes-cli.exe
+  D:\programacion\Rusty-FE\target\emulator-package\psx-cli.exe
+  D:\programacion\Rusty-FE\target\emulator-package\snes-cli.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\backups\audio-gb-nes-20261017-193701\gb-desktop.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\backups\nes-sequencer-20261018-100241\nes-desktop.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\backups\renderers-20261017-171457\gen-desktop.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\backups\renderers-20261017-171457\psx-desktop.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\backups\snes-transfers-20261020-142600\snes-desktop.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\gb-index\cached.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\gb-index\dynamic.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\gb-palette\palette.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\gb-render\sprite-small.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\gb-render\sprite-wide.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\gb-tiles\cache.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\gb-tiles\span.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-current-profile\audio_reuse_bench.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-current-profile\profiled.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-nametable\combined.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-nametable\source.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-sequencer\candidate-benchmark.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-sequencer\candidate-capture.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-sequencer\candidate-desktop.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-sprite-cache\adaptive.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-sprite-cache\baseline-accuracy_capture.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-sprite-cache\eager.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\nes-sprite-layout\baseline-audio_reuse_bench.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\replay-repair\rust-nes\repaired-capture.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-genesis\audio-baseline-bench.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-genesis\baseline-capture.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-genesis\palette-bench.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-genesis\palette-capture.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-psx\audio-baseline-capture.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-psx\audio-baseline-cli.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-psx\renderer-accuracy_capture.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-psx\renderer-audio_reuse_bench.exe
+  D:\programacion\Rusty-FE\target\optimization-ports\rust-psx\renderer-cli.exe
+  D:\programacion\Rusty-FE\target\video-window-smoke\psx-software\fixture.exe
+  D:\programacion\Rusty-FE\target\video-work\baseline-gb.exe
+  D:\programacion\Rusty-FE\target\video-work\baseline-gen.exe
+  D:\programacion\Rusty-FE\target\video-work\baseline-nes.exe
+  D:\programacion\Rusty-FE\target\video-work\baseline-psx.exe
+  D:\programacion\Rusty-FE\target\video-work\baseline-snes.exe
+Keep in D:\programacion\rust-nes\target:
+  D:\programacion\rust-nes\target\av_audit_probe.exe
+  D:\programacion\rust-nes\target\debug\nes-cli.exe
+  D:\programacion\rust-nes\target\profile-ports\release\examples\audio_reuse_bench.exe
+  D:\programacion\rust-nes\target\release\nes-desktop.exe
+  D:\programacion\rust-nes\target\sf2_scene_probe.exe
+  D:\programacion\rust-nes\target\staged-check\debug\examples\race_screenshots.exe
+  D:\programacion\rust-nes\target\staged-check\debug\examples\ram_probe.exe
+Keep in D:\programacion\easy-rpg REditor\target:
+  D:\programacion\easy-rpg REditor\target\debug\easy_editor.exe
+  D:\programacion\easy-rpg REditor\target\release\lcf-codegen.exe
+Keep in D:\programacion\rusty-video\target:
+  D:\programacion\rusty-video\target\reference\original-gb.exe
+  D:\programacion\rusty-video\target\reference\original-gen.exe
+  D:\programacion\rusty-video\target\reference\original-nes.exe
+  D:\programacion\rusty-video\target\reference\original-psx.exe
+  D:\programacion\rusty-video\target\reference\original-snes.exe
+Keep in D:\programacion\rust-snes\godot_snes\gdextension\target:
+  D:\programacion\rust-snes\godot_snes\gdextension\target\release\snes_godot.dll
+Keep in D:\programacion\cargo-trim\target:
+  D:\programacion\cargo-trim\target\release\cargo-trim.exe
+Keep in D:\programacion\rust-psx\target:
+  D:\programacion\rust-psx\target\release\psx-cli.exe
+  D:\programacion\rust-psx\target\release\psx-desktop.exe
+Keep in D:\programacion\amurielle-server\target:
+  D:\programacion\amurielle-server\target\debug\amurielle-world-server.exe
+Keep in D:\programacion\amurielle-client\rust-client-ext\target:
+  D:\programacion\amurielle-client\rust-client-ext\target\debug\amurielle_client_ext.dll
+Keep in D:\programacion\rust-gb\target:
+  D:\programacion\rust-gb\target\debug\gb-cli.exe
+  D:\programacion\rust-gb\target\release\gb-desktop.exe
+Keep in D:\programacion\rusty-net\target:
+  D:\programacion\rusty-net\target\release\rusty-net-viewer.exe
+Keep in D:\programacion\rusty-server\target:
+  D:\programacion\rusty-server\target\release\rusty-server.exe
+Keep in D:\programacion\rust-gba\target:
+  D:\programacion\rust-gba\target\release\gba-desktop.exe
+Keep in D:\programacion\rust-snes\crates\snes-core\target:
+  No executable or shared library found.
+Keep in D:\programacion\rust-gb\crates\gb-desktop\target:
+  No executable or shared library found.
+Keep in D:\programacion\rust-genesis\crates\gen-desktop\target:
+  No executable or shared library found.
+Keep in D:\programacion\rust-nes\crates\nes-desktop\target:
+  No executable or shared library found.
+Keep in D:\programacion\rust-psx\crates\psx-desktop\target:
+  No executable or shared library found.
+Keep in D:\programacion\rust-snes\crates\snes-desktop\target:
+  No executable or shared library found.
+Estimated reclaimable file size: 21.74 GB
+Other artifacts, including debug symbols, static libraries and captures, will be deleted. External runtime assets are not inferred.
+ℹ️  Dry-run active. No files were deleted.

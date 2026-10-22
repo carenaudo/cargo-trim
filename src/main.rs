@@ -1,5 +1,6 @@
 use clap::Parser;
 use rayon::prelude::*;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ struct Args {
     #[arg(short = 'd', long = "older", value_name = "DAYS")]
     older_days: Option<u64>,
 
-    /// Smart mode: Keep only final binaries (.exe, .dll, .so, .dylib, .wasm, executables) and installer bundles; delete everything else (deps, build, incremental, .pdb, .rlib, tool caches, ...)
+    /// Keep newest executables/shared libraries and installer bundles; delete other artifacts
     #[arg(short = 'k', long = "keep-bin")]
     keep_bin: bool,
 
@@ -61,7 +62,8 @@ fn is_cargo_target(path: &Path) -> bool {
         return true;
     }
     // A `target/` next to a manifest, as a last resort for very old Cargo versions.
-    path.parent().map_or(false, |p| p.join("Cargo.toml").is_file())
+    path.parent()
+        .is_some_and(|p| p.join("Cargo.toml").is_file())
 }
 
 fn clean_path_display(path: &Path) -> String {
@@ -138,9 +140,7 @@ fn calculate_target_stats(target_path: &Path) -> (u64, SystemTime) {
 
 fn scan_for_targets(root: &Path) -> Vec<PathBuf> {
     let mut targets = Vec::new();
-    let mut it = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter();
+    let mut it = WalkDir::new(root).follow_links(false).into_iter();
 
     while let Some(entry_res) = it.next() {
         let entry = match entry_res {
@@ -174,152 +174,252 @@ fn scan_for_targets(root: &Path) -> Vec<PathBuf> {
     targets
 }
 
-/// Top-level target entries kept as-is: installer/distribution output (cargo-wix, cargo-dist)
-/// and the cache marker that lets us recognize the directory later.
-const KEEP_TARGET_ENTRIES: [&str; 3] = ["wix", "distrib", "CACHEDIR.TAG"];
-
-/// Top-level target entries produced by tools rather than builds; always removed even if
-/// they contain profile-like subdirectories.
-const TOOL_TARGET_DIRS: [&str; 7] = [
-    "rust-analyzer",
-    "llvm-cov-target",
-    "nextest",
-    "criterion",
-    "tmp",
-    "doc",
-    "package",
-];
-
-/// Directories inside a profile that hold installer bundles (tauri, cargo-bundle, cargo-packager).
-const KEEP_PROFILE_DIRS: [&str; 2] = ["bundle", "packager"];
-
-/// A profile dir (debug, release, custom profiles) is recognized by Cargo's bookkeeping in it.
-fn is_profile_dir(path: &Path) -> bool {
-    [".fingerprint", "deps", "build", "incremental", ".cargo-lock"]
-        .iter()
-        .any(|m| path.join(m).exists())
+#[derive(Debug)]
+struct SmartPlan {
+    keep: Vec<PathBuf>,
+    remove: Vec<(PathBuf, u64)>,
+    directories: Vec<PathBuf>,
 }
 
-/// Final artifacts worth keeping: executables and dynamic libraries / wasm modules.
-fn is_final_artifact(path: &Path) -> bool {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => matches!(
-            ext.to_ascii_lowercase().as_str(),
-            "exe" | "dll" | "so" | "dylib" | "wasm"
-        ),
-        None => is_unix_executable(path),
+fn is_shared_library(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    name.ends_with(".dll")
+        || name.ends_with(".dylib")
+        || name.ends_with(".so")
+        || name.contains(".so.")
+}
+
+fn is_executable(path: &Path, meta: &fs::Metadata) -> bool {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return path.extension().is_none() && meta.permissions().mode() & 0o111 != 0;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        false
     }
 }
 
-#[cfg(unix)]
-fn is_unix_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+fn is_installer(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    matches!(
+        ext.as_str(),
+        "msi"
+            | "msix"
+            | "msixbundle"
+            | "appx"
+            | "appxbundle"
+            | "dmg"
+            | "pkg"
+            | "deb"
+            | "rpm"
+            | "appimage"
+            | "apk"
+            | "aab"
+    )
 }
 
-#[cfg(not(unix))]
-fn is_unix_executable(_path: &Path) -> bool {
-    false
+fn is_cache_path(relative: &Path) -> bool {
+    relative.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy();
+        matches!(
+            name.as_ref(),
+            "deps"
+                | "incremental"
+                | "build"
+                | ".fingerprint"
+                | "examples"
+                | "rust-analyzer"
+                | "llvm-cov-target"
+                | "nextest"
+                | "criterion"
+                | "tmp"
+                | "doc"
+                | "package"
+        ) || name.starts_with("flycheck")
+    })
 }
 
-/// Removes a file or directory, adding whatever was actually deleted to `freed`.
-/// On failure, the bytes that did get removed still count and the first error is kept.
-fn remove_entry(path: &Path, freed: &mut u64, first_err: &mut Option<io::Error>) {
-    let is_dir = fs::symlink_metadata(path).map(|m| m.is_dir()).unwrap_or(false);
-    let (before, _) = calculate_target_stats(path);
-    let res = if is_dir {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    };
-    match res {
-        Ok(_) => *freed += before,
-        Err(e) => {
-            let (after, _) = if path.exists() {
-                calculate_target_stats(path)
-            } else {
-                (0, SystemTime::UNIX_EPOCH)
-            };
-            *freed += before.saturating_sub(after);
-            if first_err.is_none() {
-                *first_err = Some(io::Error::new(
-                    e.kind(),
-                    format!("{}: {}", clean_path_display(path), e),
+fn plan_smart_cleanup(target: &Path) -> io::Result<SmartPlan> {
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut newest = BTreeMap::<(PathBuf, std::ffi::OsString), (SystemTime, PathBuf)>::new();
+    let mut libraries = Vec::new();
+    let mut bundles = Vec::new();
+    let mut walker = WalkDir::new(target)
+        .follow_links(false)
+        .min_depth(1)
+        .into_iter();
+    while let Some(entry) = walker.next() {
+        let entry = entry.map_err(io::Error::other)?;
+        let path = entry.path().to_path_buf();
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        let relative = path.strip_prefix(target).unwrap();
+        let in_cache = is_cache_path(relative.parent().unwrap());
+        if entry.file_type().is_dir()
+            && !in_cache
+            && (name == "bundle"
+                || name == "packager"
+                || (relative.components().count() == 1
+                    && matches!(name.as_str(), "wix" | "distrib"))
+                || name.ends_with(".app")
+                || name.ends_with(".framework")
+                || name.ends_with(".bundle"))
+        {
+            bundles.push(path);
+            walker.skip_current_dir();
+            continue;
+        }
+        // Fail closed: links may point outside the target or form library chains.
+        if entry.path_is_symlink() {
+            return Err(io::Error::other(format!(
+                "Cannot safely trim target containing a symbolic link: {}",
+                path.display()
+            )));
+        }
+        if entry.file_type().is_dir() {
+            directories.push(path);
+            continue;
+        }
+        let meta = entry.metadata().map_err(io::Error::other)?;
+        if !in_cache
+            && (is_executable(&path, &meta)
+                || is_shared_library(&path)
+                || path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("wasm")))
+        {
+            let candidate = (meta.modified()?, path.clone());
+            // Compare profiles within one target architecture, never across triples.
+            // This also keeps independent nested output trees from competing.
+            let scope = relative.parent().unwrap().parent().unwrap_or(Path::new(""));
+            let key = (
+                scope.to_path_buf(),
+                path.file_name().unwrap().to_os_string(),
+            );
+            if !newest.get(&key).is_some_and(|old| candidate <= *old) {
+                newest.insert(key, candidate);
+            }
+        }
+        if is_shared_library(&path) {
+            libraries.push(path.clone());
+        }
+        if !in_cache && is_installer(&path) {
+            bundles.push(path.clone());
+        }
+        files.push((path, meta.len()));
+    }
+    let mut keep: HashSet<PathBuf> = newest.into_values().map(|(_, path)| path).collect();
+    // Keep sibling libraries with retained programs: picking a DLL from another
+    // profile can break the loader or introduce an incompatible ABI.
+    let output_dirs: HashSet<PathBuf> = keep
+        .iter()
+        .map(|p| p.parent().unwrap().to_path_buf())
+        .collect();
+    keep.extend(
+        libraries
+            .into_iter()
+            .filter(|p| output_dirs.contains(p.parent().unwrap())),
+    );
+    keep.extend(bundles);
+    let remove = files
+        .into_iter()
+        .filter(|(p, _)| {
+            !keep.contains(p)
+                && p != &target.join("CACHEDIR.TAG")
+                && p != &target.join(".rustc_info.json")
+        })
+        .collect();
+    let mut keep: Vec<_> = keep.into_iter().collect();
+    keep.sort();
+    directories.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    Ok(SmartPlan {
+        keep,
+        remove,
+        directories,
+    })
+}
+
+#[derive(Default, Debug)]
+struct CleanupResult {
+    removed_bytes: u64,
+    error: Option<io::Error>,
+}
+
+impl CleanupResult {
+    fn record(&mut self, path: &Path, result: io::Result<()>) {
+        if let Err(error) = result {
+            if self.error.is_none() {
+                self.error = Some(io::Error::new(
+                    error.kind(),
+                    format!("{}: {}", path.display(), error),
                 ));
             }
         }
     }
-}
 
-/// Inside a profile dir keep only top-level final artifacts and installer bundles.
-/// Everything else (deps, build, incremental, .fingerprint, examples, .pdb, .d, .rlib, ...) goes.
-fn trim_profile_dir(profile: &Path, freed: &mut u64, first_err: &mut Option<io::Error>) {
-    let Ok(entries) = fs::read_dir(profile) else { return };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        let keep = if is_dir {
-            KEEP_PROFILE_DIRS.contains(&name.as_str())
-        } else {
-            is_final_artifact(&path)
-        };
-        if !keep {
-            remove_entry(&path, freed, first_err);
-        }
-    }
-}
-
-fn clean_target_smart(target_path: &Path) -> (u64, Option<io::Error>) {
-    let mut freed = 0u64;
-    let mut first_err = None;
-
-    let Ok(entries) = fs::read_dir(target_path) else {
-        return (0, None);
-    };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-
-        if KEEP_TARGET_ENTRIES.contains(&name.as_str()) {
-            continue;
-        }
-        if !is_dir || TOOL_TARGET_DIRS.contains(&name.as_str()) || name.starts_with("flycheck") {
-            remove_entry(&path, &mut freed, &mut first_err);
-            continue;
-        }
-        if is_profile_dir(&path) {
-            trim_profile_dir(&path, &mut freed, &mut first_err);
-            continue;
-        }
-
-        // Cross-compilation dirs (target/<triple>/<profile>) hold profile dirs one level down.
-        let sub_profiles: Vec<PathBuf> = fs::read_dir(&path)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir() && is_profile_dir(p))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if sub_profiles.is_empty() {
-            remove_entry(&path, &mut freed, &mut first_err);
-            continue;
-        }
-        for sub in fs::read_dir(&path).into_iter().flatten().filter_map(|e| e.ok()) {
-            let sub_path = sub.path();
-            if sub_profiles.contains(&sub_path) {
-                trim_profile_dir(&sub_path, &mut freed, &mut first_err);
-            } else {
-                remove_entry(&sub_path, &mut freed, &mut first_err);
+    fn remove_file(&mut self, path: &Path) {
+        let result = (|| {
+            // Use the current size, not the potentially stale dry-run estimate.
+            let meta = fs::symlink_metadata(path)?;
+            fs::remove_file(path)?;
+            if meta.is_file() {
+                self.removed_bytes += meta.len();
             }
+            Ok(())
+        })();
+        self.record(path, result);
+    }
+}
+
+fn clean_target_smart(plan: &SmartPlan) -> CleanupResult {
+    let mut result = CleanupResult::default();
+    for (path, _) in &plan.remove {
+        result.remove_file(path);
+    }
+    for path in &plan.directories {
+        let removal = (|| {
+            if fs::read_dir(path)?.next().transpose()?.is_none() {
+                fs::remove_dir(path)?;
+            }
+            Ok(())
+        })();
+        result.record(path, removal);
+    }
+    result
+}
+
+fn clean_target_all(target: &Path) -> CleanupResult {
+    let mut result = CleanupResult::default();
+    for entry in WalkDir::new(target)
+        .follow_links(false)
+        .contents_first(true)
+    {
+        match entry {
+            Ok(entry) if entry.file_type().is_dir() => {
+                result.record(entry.path(), fs::remove_dir(entry.path()));
+            }
+            Ok(entry) => result.remove_file(entry.path()),
+            Err(error) => result.record(target, Err(io::Error::other(error))),
         }
     }
-
-    (freed, first_err)
+    result
 }
 
 fn main() -> io::Result<()> {
@@ -332,7 +432,10 @@ fn main() -> io::Result<()> {
     let root = fs::canonicalize(&args.path).unwrap_or_else(|_| args.path.clone());
     let current_exe = std::env::current_exe().ok();
 
-    println!("🔍 Scanning for Cargo targets in: {}", clean_path_display(&root));
+    println!(
+        "🔍 Scanning for Cargo targets in: {}",
+        clean_path_display(&root)
+    );
     let raw_targets = scan_for_targets(&root);
 
     if raw_targets.is_empty() {
@@ -340,7 +443,10 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    println!("📊 Found {} potential targets. Analyzing sizes and age in parallel...", raw_targets.len());
+    println!(
+        "📊 Found {} potential targets. Analyzing sizes and age in parallel...",
+        raw_targets.len()
+    );
 
     let mut target_infos: Vec<TargetInfo> = raw_targets
         .into_par_iter()
@@ -376,12 +482,17 @@ fn main() -> io::Result<()> {
     }
 
     // Sort by size descending
-    target_infos.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    target_infos.sort_by_key(|info| std::cmp::Reverse(info.size_bytes));
 
     let total_size: u64 = target_infos.iter().map(|t| t.size_bytes).sum();
 
-    println!("\n┌─ Found Cargo Targets ──────────────────────────────────────────────────────────────┐");
-    println!("│ {:<68} │ {:<12} │ {:<14} │", "Project Path", "Size", "Last Active");
+    println!(
+        "\n┌─ Found Cargo Targets ──────────────────────────────────────────────────────────────┐"
+    );
+    println!(
+        "│ {:<68} │ {:<12} │ {:<14} │",
+        "Project Path", "Size", "Last Active"
+    );
     println!("├──────────────────────────────────────────────────────────────────────┼──────────────┼────────────────┤");
 
     for info in &target_infos {
@@ -406,6 +517,28 @@ fn main() -> io::Result<()> {
         target_infos.len()
     );
 
+    let mut smart_plans = BTreeMap::new();
+    if args.keep_bin {
+        let mut reclaimable = 0;
+        for info in &target_infos {
+            let plan = plan_smart_cleanup(&info.path)?;
+            println!("Keep in {}:", clean_path_display(&info.path));
+            if plan.keep.is_empty() {
+                println!("  No executable or shared library found.");
+            }
+            for path in &plan.keep {
+                println!("  {}", clean_path_display(path));
+            }
+            reclaimable += plan.remove.iter().map(|(_, size)| size).sum::<u64>();
+            smart_plans.insert(info.path.clone(), plan);
+        }
+        println!(
+            "Estimated reclaimable file size: {}",
+            format_bytes(reclaimable)
+        );
+        println!("Other artifacts, including debug symbols, static libraries and captures, will be deleted. External runtime assets are not inferred.");
+    }
+
     if args.dry_run {
         println!("ℹ️  Dry-run active. No files were deleted.");
         return Ok(());
@@ -414,11 +547,15 @@ fn main() -> io::Result<()> {
     // Check confirmation if not -y
     if !args.yes {
         let mode_desc = if args.keep_bin {
-            "Trim intermediate caches (keep final binaries)"
+            "Delete other artifacts; keep newest executables and shared libraries listed above"
         } else {
             "Completely delete target directories"
         };
-        print!("❓ Clean these {} targets [{}]? (y/N): ", target_infos.len(), mode_desc);
+        print!(
+            "❓ Clean these {} targets [{}]? (y/N): ",
+            target_infos.len(),
+            mode_desc
+        );
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -432,7 +569,7 @@ fn main() -> io::Result<()> {
 
     println!("\n🧹 Cleaning targets...");
 
-    let results: Vec<(PathBuf, u64, Option<io::Error>)> = target_infos
+    let results: Vec<(PathBuf, CleanupResult)> = target_infos
         .par_iter()
         .map(|info| {
             // Self protection: Don't delete target directory of currently executing binary
@@ -440,20 +577,17 @@ fn main() -> io::Result<()> {
                 if let Ok(canon_exe) = fs::canonicalize(exe) {
                     if let Ok(canon_target) = fs::canonicalize(&info.path) {
                         if canon_exe.starts_with(&canon_target) {
-                            return (info.path.clone(), 0, Some(io::Error::new(io::ErrorKind::Other, "Skipped: Target directory contains the currently running cargo-trim binary")));
+                            return (info.path.clone(), CleanupResult { removed_bytes: 0, error: Some(io::Error::other("Skipped: Target directory contains the currently running cargo-trim binary")) });
                         }
                     }
                 }
             }
 
             if args.keep_bin {
-                let (freed, err) = clean_target_smart(&info.path);
-                (info.path.clone(), freed, err)
+                let freed = clean_target_smart(&smart_plans[&info.path]);
+                (info.path.clone(), freed)
             } else {
-                let mut freed = 0u64;
-                let mut err = None;
-                remove_entry(&info.path, &mut freed, &mut err);
-                (info.path.clone(), freed, err)
+                (info.path.clone(), clean_target_all(&info.path))
             }
         })
         .collect();
@@ -461,21 +595,38 @@ fn main() -> io::Result<()> {
     let mut total_freed = 0u64;
     let mut failed = 0;
 
-    for (path, freed, err) in results {
+    for (path, res) in results {
         let disp = clean_path_display(&path);
-        total_freed += freed;
-        match err {
-            None => println!("  ✅ Cleaned: {} (freed {})", disp, format_bytes(freed)),
+        total_freed += res.removed_bytes;
+        match res.error {
+            None => {
+                println!(
+                    "  ✅ Cleaned: {} (removed {})",
+                    disp,
+                    format_bytes(res.removed_bytes)
+                );
+            }
             Some(e) => {
-                println!("  ⚠️  Partially cleaned {} (freed {}): {}", disp, format_bytes(freed), e);
+                println!(
+                    "  ⚠️  Could not fully clean {} (removed {}): {}",
+                    disp,
+                    format_bytes(res.removed_bytes),
+                    e
+                );
                 failed += 1;
             }
         }
     }
 
-    println!("\n🎉 Finished! Successfully freed {} of disk space.", format_bytes(total_freed));
+    println!(
+        "\n🎉 Finished! Removed {} of files (logical size; disk space reclaimed may differ).",
+        format_bytes(total_freed)
+    );
     if failed > 0 {
-        println!("⚠️  {} targets could not be fully cleaned (files may be open in another program or IDE).", failed);
+        println!(
+            "⚠️  {} targets could not be deleted (may be open in another program or IDE).",
+            failed
+        );
     }
 
     Ok(())
@@ -491,63 +642,228 @@ mod tests {
         assert_eq!(Args::command().get_author(), Some("carenaudo, Antigravity"));
     }
 
+    fn fixture(root: &Path, path: &str, bytes: &[u8], age: u64) -> PathBuf {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(age)),
+            )
+            .unwrap();
+        path
+    }
+
     #[test]
-    fn smart_clean_keeps_only_binaries_and_bundles() {
+    fn smart_removes_debug_and_nested_artifacts_but_keeps_newest_outputs() {
         let root = scratch("smart");
-        let t = root.join("target");
-        let files = [
+        let old = fixture(&root, "release/game.exe", b"old", 1);
+        let latest = fixture(&root, "debug/game.exe", b"new", 2);
+        let tool = fixture(&root, "release/tool.exe", b"tool", 1);
+        let library = fixture(&root, "custom/libplugin.so", b"library", 2);
+        fixture(&root, "release/libplugin.so", b"older", 1);
+        let dll = fixture(&root, "debug/runtime.dll", b"runtime", 1);
+        for path in [
+            "debug/game.pdb",
+            "debug/lib.rlib",
+            "nested/release/deps/cache.rmeta",
+            "debug/deps/game-hash.exe",
+            "performance/frame.rgba",
+        ] {
+            fixture(&root, path, b"junk", 3);
+        }
+        let plan = plan_smart_cleanup(&root).unwrap();
+        let expected: u64 = plan.remove.iter().map(|(_, size)| size).sum();
+        let before = calculate_target_stats(&root).0;
+        let result = clean_target_smart(&plan);
+        assert!(result.error.is_none());
+        assert_eq!(result.removed_bytes, expected);
+        assert_eq!(before - calculate_target_stats(&root).0, expected);
+        assert!(!old.exists());
+        for path in [latest, tool, library, dll] {
+            assert!(path.exists());
+        }
+        assert!(!root.join("performance").exists());
+        assert!(!root.join("debug/deps").exists());
+        assert!(!root.join("debug/game.pdb").exists());
+        assert!(plan_smart_cleanup(&root).unwrap().remove.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn smart_keeps_installers_and_complete_bundles() {
+        let root = scratch("bundles");
+        let paths = [
+            "release/bundle/nsis/setup.exe",
+            "release/bundle/resources/data.bin",
+            "debug/Game.app/Contents/Resources/icon.png",
+            "packages/game.msi",
+            "packages/game.AppImage",
+            "packages/game.deb",
+            "release/plugin.dylib",
+        ];
+        for path in paths {
+            fixture(&root, path, b"keep", 1);
+        }
+        fixture(&root, "debug/cache.pdb", b"remove", 1);
+        let plan = plan_smart_cleanup(&root).unwrap();
+        assert!(root.join("debug/cache.pdb").exists()); // Planning is read-only.
+        assert!(clean_target_smart(&plan).error.is_none());
+        for path in paths {
+            assert!(root.join(path).exists(), "{path}");
+        }
+        assert!(!root.join("debug/cache.pdb").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn smart_reports_deletion_failures() {
+        let root = scratch("failure");
+        let path = fixture(&root, "debug/cache.pdb", b"junk", 1);
+        let plan = plan_smart_cleanup(&root).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(clean_target_smart(&plan).error.is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn smart_handles_cross_targets_packaging_and_tool_caches_twice() {
+        let root = scratch("layouts");
+        let kept = [
             "CACHEDIR.TAG",
             ".rustc_info.json",
-            "debug/.cargo-lock",
-            "debug/app.exe",
-            "debug/app.pdb",
-            "debug/app.d",
-            "debug/libapp.rlib",
-            "debug/deps/app-123.exe",
-            "debug/.fingerprint/x/y",
-            "debug/examples/ex.exe",
-            "release/.fingerprint/x/y",
-            "release/core.dll",
-            "release/bundle/msi/app.msi",
-            "release-lto/deps/z.rlib",
-            "release-lto/app.exe",
-            "wasm32-unknown-unknown/release/deps/a.rlib",
+            "release/app.exe",
+            "custom/plugin.dll",
+            "x86_64-pc-windows-msvc/release/app.exe",
+            "aarch64-pc-windows-msvc/release/app.exe",
             "wasm32-unknown-unknown/release/app.wasm",
-            "rust-analyzer/flycheck0/debug/deps/a.rlib",
-            "doc/index.html",
-            "wix/app.msi",
+            "release/packager/resources/config.json",
+            "wix/source.wxs",
+            "distrib/app.tar.gz",
+            "release/libplugin.so.1",
+            "release/Game.app/Contents/Info.plist",
         ];
-        for f in files {
-            let p = t.join(f);
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"data").unwrap();
+        let removed = [
+            "debug/app.exe",
+            "release/.cargo-lock",
+            "custom/deps/plugin.dll",
+            "release/app.pdb",
+            "release/app.d",
+            "release/libapp.a",
+            "release/examples/demo.exe",
+            "release/build/pkg/out/setup.msi",
+            "release/build/pkg/out/bundle/data.bin",
+            "release/deps/Plugin.framework/Resources/data.bin",
+            "rust-analyzer/debug/app.exe",
+            "flycheck0/debug/app.exe",
+            "llvm-cov-target/release/app.exe",
+            "nextest/app.exe",
+            "criterion/app.exe",
+            "tmp/app.exe",
+            "doc/demo.wasm",
+            "package/demo/target/release/app.exe",
+        ];
+        for path in kept {
+            fixture(&root, path, b"keep", 2);
         }
-
-        let (freed, err) = clean_target_smart(&t);
-        assert!(err.is_none());
-
-        let mut left: Vec<String> = WalkDir::new(&t)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .map(|e| e.path().strip_prefix(&t).unwrap().to_string_lossy().replace('\\', "/"))
-            .collect();
-        left.sort();
-        let _ = fs::remove_dir_all(&root);
-
+        for path in removed {
+            fixture(&root, path, b"delete", 1);
+        }
+        let plan = plan_smart_cleanup(&root).unwrap();
         assert_eq!(
-            left,
-            [
-                "CACHEDIR.TAG",
-                "debug/app.exe",
-                "release-lto/app.exe",
-                "release/bundle/msi/app.msi",
-                "release/core.dll",
-                "wasm32-unknown-unknown/release/app.wasm",
-                "wix/app.msi",
-            ]
+            plan.remove.iter().map(|(_, size)| size).sum::<u64>(),
+            removed.len() as u64 * 6
         );
-        assert_eq!(freed, 4 * (files.len() as u64 - left.len() as u64));
+        let result = clean_target_smart(&plan);
+        assert!(result.error.is_none());
+        assert_eq!(result.removed_bytes, removed.len() as u64 * 6);
+        for path in kept {
+            assert!(root.join(path).exists(), "{path}");
+        }
+        for path in removed {
+            assert!(!root.join(path).exists(), "{path}");
+        }
+        // No cache markers are left to identify custom or cross-target profiles.
+        let again = plan_smart_cleanup(&root).unwrap();
+        assert!(again.remove.is_empty());
+        assert!(clean_target_smart(&again).error.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn partial_cleanup_counts_successes_and_current_sizes() {
+        let root = scratch("partial");
+        let first = fixture(&root, "first.pdb", b"old", 1);
+        let missing = root.join("missing.pdb");
+        let last = fixture(&root, "last.pdb", b"last", 1);
+        let plan = SmartPlan {
+            keep: vec![],
+            remove: vec![(first.clone(), 3), (missing, 100), (last.clone(), 4)],
+            directories: vec![],
+        };
+        fs::write(&first, b"changed size").unwrap();
+        let result = clean_target_smart(&plan);
+        assert!(result.error.is_some());
+        assert_eq!(result.removed_bytes, 16);
+        assert!(!first.exists());
+        assert!(!last.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn full_cleanup_counts_files_and_reports_missing_target() {
+        let root = scratch("full");
+        fixture(&root, "debug/deps/file.rlib", b"data", 1);
+        fixture(&root, "release/app.exe", b"program", 1);
+        let result = clean_target_all(&root);
+        assert!(result.error.is_none());
+        assert_eq!(result.removed_bytes, 11);
+        assert!(!root.exists());
+        let result = clean_target_all(&root);
+        assert!(result.error.is_some());
+        assert_eq!(result.removed_bytes, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn full_cleanup_counts_partial_success_with_locked_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = scratch("locked");
+        let locked = fixture(&root, "locked.pdb", b"locked", 1);
+        fixture(&root, "other.pdb", b"other", 1);
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)
+            .unwrap();
+        let result = clean_target_all(&root);
+        assert!(result.error.is_some());
+        assert_eq!(result.removed_bytes, 5);
+        assert!(locked.exists());
+        drop(handle);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smart_keeps_unix_executables_and_rejects_external_links() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = scratch("unix");
+        let executable = fixture(&root, "release/app", b"program", 1);
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        fixture(&root, "release/cache.pdb", b"cache", 1);
+        assert!(plan_smart_cleanup(&root)
+            .unwrap()
+            .keep
+            .contains(&executable));
+        symlink(&executable, root.join("release/link")).unwrap();
+        assert!(plan_smart_cleanup(&root).is_err());
+        assert!(root.join("release/cache.pdb").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn scratch(name: &str) -> PathBuf {

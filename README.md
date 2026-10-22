@@ -59,7 +59,7 @@ Existing tools often struggle with real-world developer workspaces:
 * **Dual Execution Mode:** Runs directly as `cargo trim` or as a standalone binary `cargo-trim.exe`.
 * **Safe Dry-Run Mode (`-n`):** Inspect targets and potential space savings before making any changes.
 * **Age-Based Filtering (`-d` / `--older`):** Clean only projects that haven't been modified in $N$ days.
-* **Smart Cache Trimming (`-k` / `--keep-bin`):** Deletes huge intermediate caches (`deps/`, `incremental/`, `build/`, `.fingerprint`) but keeps final compiled binaries (`.exe`, `.dll`, etc.) intact.
+* **Keep Latest Binaries (`-k` / `--keep-bin`):** Keeps the newest copy of each executable and shared library by filename and modification time within each target architecture, plus installer bundles. Trims other artifacts throughout `debug/`, `release/`, custom profiles, and nested directories.
 * **Self-Protection:** Automatically detects and avoids deleting the directory containing the currently running `cargo-trim` binary.
 
 ---
@@ -113,10 +113,22 @@ cargo trim -d 14
 ```
 
 ### 5. Smart Cache Clean (Keep Final Executables)
-Reclaim disk space from intermediate caches while keeping your compiled binaries:
+Reclaim disk space while keeping the newest copy of each compiled program or shared library:
 ```bash
 cargo trim -k
 ```
+
+Preview the exact retained paths and estimated reclaimable file size first:
+
+```powershell
+cargo trim D:\programacion -k -n
+```
+
+The newest file by modification time wins for each filename across profiles within the same target architecture (host and explicit target directories are kept separate); ties use path order. Outputs stay in their original locations. Windows `.exe`, `.dll`, Unix extensionless executable files, `.so` (including versioned names), `.dylib`, and `.wasm` outputs are recognized. Executables and libraries inside Cargo cache directories (`deps`, `incremental`, `build`, `.fingerprint`, `examples`) or tool caches (`rust-analyzer`, `flycheck*`, `llvm-cov-target`, `nextest`, `criterion`, `tmp`, `doc`, `package`) are not final-output candidates. Sibling shared libraries are also retained alongside selected outputs to avoid mixing runtime dependencies from different builds.
+
+Installer files (`.msi`, `.msix`, `.msixbundle`, `.appx`, `.appxbundle`, `.dmg`, `.pkg`, `.deb`, `.rpm`, `.AppImage`, `.apk`, `.aab`) and entire `bundle/`, `packager/`, `.app`, `.framework`, and `.bundle` directories, plus top-level `wix/` and `distrib/` directories, are retained, including their resources. Bundles are kept intact rather than deduplicated. Installer and bundle exceptions do not apply inside cache directories. Profiles do not require cache markers, so repeated cleanup and separate Cargo build directories are supported. Other artifacts—including `.pdb`, `.rlib`, `.rmeta`, captures, and old executable copies—are deleted from both debug and release builds. Cargo identification markers are retained. Arbitrary runtime assets outside bundles are not inferred; inspect the preview if your program needs them. Symbolic links outside retained bundles cause planning to stop without deleting files.
+
+Deletion totals count the logical size of successfully removed files, including successes in partially failed targets. They are not measurements of free disk space: hard links (including Cargo output copies in `deps`), compression, and sparse files can change actual space reclaimed. Planning errors stop smart cleanup before deletion; deletion errors are reported while remaining planned files are attempted.
 
 ### 6. Filter by Minimum Size
 Only list or clean targets that occupy more than a specific size in MB:
@@ -138,8 +150,8 @@ Options:
   -n, --dry-run          Dry run: Only list discovered targets and calculate space without deleting
   -y, --yes              Non-interactive: Delete targets without confirmation prompt
   -d, --older <DAYS>     Filter: Only clean targets inactive/unmodified for at least N days
-  -k, --keep-bin         Smart mode: Delete intermediate caches (deps, incremental, build, .fingerprint)
-                         while keeping final compiled binaries (.exe, .dll, etc.)
+  -k, --keep-bin         Keep newest executables/shared libraries and installer bundles;
+                         delete other artifacts
       --min-mb <MIN_MB>  Only include targets larger than this minimum size in MB [default: 0]
   -h, --help             Print help
   -V, --version          Print version
