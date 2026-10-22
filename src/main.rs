@@ -30,7 +30,7 @@ struct Args {
     #[arg(short = 'd', long = "older", value_name = "DAYS")]
     older_days: Option<u64>,
 
-    /// Smart mode: Delete intermediate caches (deps, incremental, build, .fingerprint) but keep final compiled binaries (.exe, .dll, etc.)
+    /// Smart mode: Keep only final binaries (.exe, .dll, .so, .dylib, .wasm, executables) and installer bundles; delete everything else (deps, build, incremental, .pdb, .rlib, tool caches, ...)
     #[arg(short = 'k', long = "keep-bin")]
     keep_bin: bool,
 
@@ -176,40 +176,152 @@ fn scan_for_targets(root: &Path) -> Vec<PathBuf> {
     targets
 }
 
-fn clean_target_smart(target_path: &Path) -> io::Result<u64> {
-    let mut freed_bytes = 0u64;
+/// Top-level target entries kept as-is: installer/distribution output (cargo-wix, cargo-dist)
+/// and the cache marker that lets us recognize the directory later.
+const KEEP_TARGET_ENTRIES: [&str; 3] = ["wix", "distrib", "CACHEDIR.TAG"];
 
-    // Subdirectories inside profiles to clean
-    let cache_dirs = ["deps", "incremental", "build", ".fingerprint", "examples"];
-    let profiles = ["debug", "release"];
+/// Top-level target entries produced by tools rather than builds; always removed even if
+/// they contain profile-like subdirectories.
+const TOOL_TARGET_DIRS: [&str; 7] = [
+    "rust-analyzer",
+    "llvm-cov-target",
+    "nextest",
+    "criterion",
+    "tmp",
+    "doc",
+    "package",
+];
 
-    for profile in &profiles {
-        let prof_dir = target_path.join(profile);
-        if prof_dir.is_dir() {
-            for cache in &cache_dirs {
-                let cache_path = prof_dir.join(cache);
-                if cache_path.exists() {
-                    let (size, _) = calculate_target_stats(&cache_path);
-                    if let Ok(_) = fs::remove_dir_all(&cache_path) {
-                        freed_bytes += size;
-                    }
-                }
+/// Directories inside a profile that hold installer bundles (tauri, cargo-bundle, cargo-packager).
+const KEEP_PROFILE_DIRS: [&str; 2] = ["bundle", "packager"];
+
+/// A profile dir (debug, release, custom profiles) is recognized by Cargo's bookkeeping in it.
+fn is_profile_dir(path: &Path) -> bool {
+    [".fingerprint", "deps", "build", "incremental", ".cargo-lock"]
+        .iter()
+        .any(|m| path.join(m).exists())
+}
+
+/// Final artifacts worth keeping: executables and dynamic libraries / wasm modules.
+fn is_final_artifact(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "exe" | "dll" | "so" | "dylib" | "wasm"
+        ),
+        None => is_unix_executable(path),
+    }
+}
+
+#[cfg(unix)]
+fn is_unix_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_unix_executable(_path: &Path) -> bool {
+    false
+}
+
+/// Removes a file or directory, adding whatever was actually deleted to `freed`.
+/// On failure, the bytes that did get removed still count and the first error is kept.
+fn remove_entry(path: &Path, freed: &mut u64, first_err: &mut Option<io::Error>) {
+    let is_dir = fs::symlink_metadata(path).map(|m| m.is_dir()).unwrap_or(false);
+    let (before, _) = calculate_target_stats(path);
+    let res = if is_dir {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    match res {
+        Ok(_) => *freed += before,
+        Err(e) => {
+            let (after, _) = if path.exists() {
+                calculate_target_stats(path)
+            } else {
+                (0, SystemTime::UNIX_EPOCH)
+            };
+            *freed += before.saturating_sub(after);
+            if first_err.is_none() {
+                *first_err = Some(io::Error::new(
+                    e.kind(),
+                    format!("{}: {}", clean_path_display(path), e),
+                ));
+            }
+        }
+    }
+}
+
+/// Inside a profile dir keep only top-level final artifacts and installer bundles.
+/// Everything else (deps, build, incremental, .fingerprint, examples, .pdb, .d, .rlib, ...) goes.
+fn trim_profile_dir(profile: &Path, freed: &mut u64, first_err: &mut Option<io::Error>) {
+    let Ok(entries) = fs::read_dir(profile) else { return };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let keep = if is_dir {
+            KEEP_PROFILE_DIRS.contains(&name.as_str())
+        } else {
+            is_final_artifact(&path)
+        };
+        if !keep {
+            remove_entry(&path, freed, first_err);
+        }
+    }
+}
+
+fn clean_target_smart(target_path: &Path) -> (u64, Option<io::Error>) {
+    let mut freed = 0u64;
+    let mut first_err = None;
+
+    let Ok(entries) = fs::read_dir(target_path) else {
+        return (0, None);
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+
+        if KEEP_TARGET_ENTRIES.contains(&name.as_str()) {
+            continue;
+        }
+        if !is_dir || TOOL_TARGET_DIRS.contains(&name.as_str()) || name.starts_with("flycheck") {
+            remove_entry(&path, &mut freed, &mut first_err);
+            continue;
+        }
+        if is_profile_dir(&path) {
+            trim_profile_dir(&path, &mut freed, &mut first_err);
+            continue;
+        }
+
+        // Cross-compilation dirs (target/<triple>/<profile>) hold profile dirs one level down.
+        let sub_profiles: Vec<PathBuf> = fs::read_dir(&path)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir() && is_profile_dir(p))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if sub_profiles.is_empty() {
+            remove_entry(&path, &mut freed, &mut first_err);
+            continue;
+        }
+        for sub in fs::read_dir(&path).into_iter().flatten().filter_map(|e| e.ok()) {
+            let sub_path = sub.path();
+            if sub_profiles.contains(&sub_path) {
+                trim_profile_dir(&sub_path, &mut freed, &mut first_err);
+            } else {
+                remove_entry(&sub_path, &mut freed, &mut first_err);
             }
         }
     }
 
-    // Also clean doc and package directories
-    for extra in &["doc", "package"] {
-        let p = target_path.join(extra);
-        if p.exists() {
-            let (size, _) = calculate_target_stats(&p);
-            if let Ok(_) = fs::remove_dir_all(&p) {
-                freed_bytes += size;
-            }
-        }
-    }
-
-    Ok(freed_bytes)
+    (freed, first_err)
 }
 
 fn main() -> io::Result<()> {
@@ -322,7 +434,7 @@ fn main() -> io::Result<()> {
 
     println!("\n🧹 Cleaning targets...");
 
-    let results: Vec<(PathBuf, io::Result<u64>)> = target_infos
+    let results: Vec<(PathBuf, u64, Option<io::Error>)> = target_infos
         .par_iter()
         .map(|info| {
             // Self protection: Don't delete target directory of currently executing binary
@@ -330,20 +442,20 @@ fn main() -> io::Result<()> {
                 if let Ok(canon_exe) = fs::canonicalize(exe) {
                     if let Ok(canon_target) = fs::canonicalize(&info.path) {
                         if canon_exe.starts_with(&canon_target) {
-                            return (info.path.clone(), Err(io::Error::new(io::ErrorKind::Other, "Skipped: Target directory contains the currently running cargo-trim binary")));
+                            return (info.path.clone(), 0, Some(io::Error::new(io::ErrorKind::Other, "Skipped: Target directory contains the currently running cargo-trim binary")));
                         }
                     }
                 }
             }
 
             if args.keep_bin {
-                let freed = clean_target_smart(&info.path);
-                (info.path.clone(), freed)
+                let (freed, err) = clean_target_smart(&info.path);
+                (info.path.clone(), freed, err)
             } else {
-                match fs::remove_dir_all(&info.path) {
-                    Ok(_) => (info.path.clone(), Ok(info.size_bytes)),
-                    Err(e) => (info.path.clone(), Err(e)),
-                }
+                let mut freed = 0u64;
+                let mut err = None;
+                remove_entry(&info.path, &mut freed, &mut err);
+                (info.path.clone(), freed, err)
             }
         })
         .collect();
@@ -351,15 +463,13 @@ fn main() -> io::Result<()> {
     let mut total_freed = 0u64;
     let mut failed = 0;
 
-    for (path, res) in results {
+    for (path, freed, err) in results {
         let disp = clean_path_display(&path);
-        match res {
-            Ok(freed) => {
-                println!("  ✅ Cleaned: {} (freed {})", disp, format_bytes(freed));
-                total_freed += freed;
-            }
-            Err(e) => {
-                println!("  ⚠️  Failed to clean {}: {}", disp, e);
+        total_freed += freed;
+        match err {
+            None => println!("  ✅ Cleaned: {} (freed {})", disp, format_bytes(freed)),
+            Some(e) => {
+                println!("  ⚠️  Partially cleaned {} (freed {}): {}", disp, format_bytes(freed), e);
                 failed += 1;
             }
         }
@@ -367,7 +477,7 @@ fn main() -> io::Result<()> {
 
     println!("\n🎉 Finished! Successfully freed {} of disk space.", format_bytes(total_freed));
     if failed > 0 {
-        println!("⚠️  {} targets could not be deleted (may be open in another program or IDE).", failed);
+        println!("⚠️  {} targets could not be fully cleaned (files may be open in another program or IDE).", failed);
     }
 
     Ok(())
@@ -381,5 +491,65 @@ mod tests {
     #[test]
     fn author_comes_from_cargo_toml() {
         assert_eq!(Args::command().get_author(), Some("carenaudo, Antigravity"));
+    }
+
+    #[test]
+    fn smart_clean_keeps_only_binaries_and_bundles() {
+        let root = std::env::temp_dir().join(format!("cargo-trim-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let t = root.join("target");
+        let files = [
+            "CACHEDIR.TAG",
+            ".rustc_info.json",
+            "debug/.cargo-lock",
+            "debug/app.exe",
+            "debug/app.pdb",
+            "debug/app.d",
+            "debug/libapp.rlib",
+            "debug/deps/app-123.exe",
+            "debug/.fingerprint/x/y",
+            "debug/examples/ex.exe",
+            "release/.fingerprint/x/y",
+            "release/core.dll",
+            "release/bundle/msi/app.msi",
+            "release-lto/deps/z.rlib",
+            "release-lto/app.exe",
+            "wasm32-unknown-unknown/release/deps/a.rlib",
+            "wasm32-unknown-unknown/release/app.wasm",
+            "rust-analyzer/flycheck0/debug/deps/a.rlib",
+            "doc/index.html",
+            "wix/app.msi",
+        ];
+        for f in files {
+            let p = t.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"data").unwrap();
+        }
+
+        let (freed, err) = clean_target_smart(&t);
+        assert!(err.is_none());
+
+        let mut left: Vec<String> = WalkDir::new(&t)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .map(|e| e.path().strip_prefix(&t).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        left.sort();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(
+            left,
+            [
+                "CACHEDIR.TAG",
+                "debug/app.exe",
+                "release-lto/app.exe",
+                "release/bundle/msi/app.msi",
+                "release/core.dll",
+                "wasm32-unknown-unknown/release/app.wasm",
+                "wix/app.msi",
+            ]
+        );
+        assert_eq!(freed, 4 * (files.len() as u64 - left.len() as u64));
     }
 }
